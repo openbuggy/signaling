@@ -56,24 +56,35 @@ func (c *Client) readPump() {
 	defer func() {
 		c.clients.unregister <- c
 		c.conn.Close()
+		log.Printf("cleanup client %s", c.id)
 	}()
 	c.conn.SetReadLimit(maxMessageSize)
 	c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.conn.SetPongHandler(func(string) error { c.conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
 	for {
 		_, data, err := c.conn.ReadMessage()
+		log.Printf("client %s read %s", c.id, string(data))
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("error: %v", err)
+				log.Printf("client %s read error %v", c.id, err)
 			}
 			break
 		}
 		data = bytes.TrimSpace(bytes.Replace(data, newline, space, -1))
 		var message RtcMessage
-		_ = json.Unmarshal(data, &message)
+		err = json.Unmarshal(data, &message)
+		if err != nil {
+			log.Fatalf("unmarshal error %v", err)
+			break
+		}
 		message.From = c.id
 		message.Type = "rtc"
-		messageBytes, _ := json.Marshal(message)
+		messageBytes, err := json.Marshal(message)
+		if err != nil {
+			log.Fatalf("marshal error %v", err)
+			break
+		}
+		log.Printf("send %s to %s", string(messageBytes), message.To)
 		c.clients.clients[message.To].send <- messageBytes
 	}
 }
@@ -83,6 +94,7 @@ func (c *Client) writePump() {
 	defer func() {
 		ticker.Stop()
 		c.conn.Close()
+		log.Printf("client %s cleanup writepump", c.id)
 	}()
 	for {
 		select {
@@ -95,22 +107,28 @@ func (c *Client) writePump() {
 
 			w, err := c.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
+				log.Fatalf("error opening writer %v", err)
 				return
 			}
+			log.Printf("client %s write %s", c.id, string(message))
 			w.Write(message)
 
 			n := len(c.send)
 			for i := 0; i < n; i++ {
+				log.Printf("write more messages %d", i)
 				w.Write(newline)
 				w.Write(<-c.send)
 			}
 
 			if err := w.Close(); err != nil {
+				log.Printf("error closing writer %v", err)
 				return
 			}
 		case <-ticker.C:
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			log.Printf("client %s write ping", c.id)
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Printf("error writing ping %v", err)
 				return
 			}
 		}
@@ -135,13 +153,16 @@ func (h *Clients) run() {
 	for {
 		select {
 		case client := <-h.register:
+			log.Printf("register %s", client.id)
 			h.clients[client.id] = client
 		case client := <-h.unregister:
+			log.Printf("unregister %s", client.id)
 			if _, ok := h.clients[client.id]; ok {
 				delete(h.clients, client.id)
 				close(client.send)
 			}
 		}
+		log.Print("send peers to clients")
 		for id, client := range h.clients {
 			peerIds := make([]string, len(h.clients)-1)
 			i := 0
@@ -151,17 +172,21 @@ func (h *Clients) run() {
 					i++
 				}
 			}
-			json, _ := json.Marshal(PeersMessage{Type: "peers", PeerIds: peerIds})
+			json, err := json.Marshal(PeersMessage{Type: "peers", PeerIds: peerIds})
+			if err != nil {
+				log.Fatalf("error marshal peers %v", err)
+			}
 			client.send <- json
 		}
 	}
 }
 
 func connect(clients *Clients, w http.ResponseWriter, r *http.Request) {
+	log.Print("connect new client")
 	upgrader.CheckOrigin = func(r *http.Request) bool { return true }
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println(err)
+		log.Fatalf("error upgrading connection %v", err)
 		return
 	}
 	client := &Client{id: uuid.NewString(), clients: clients, conn: conn, send: make(chan []byte, 256)}
