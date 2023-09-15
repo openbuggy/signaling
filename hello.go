@@ -1,13 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"log"
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/rs/cors"
 )
@@ -33,11 +31,6 @@ const (
 	pingPeriod = (pongWait * 9) / 10
 	// Maximum message size allowed from peer.
 	maxMessageSize = 1024 * 1024
-)
-
-var (
-	newline = []byte{'\n'}
-	space   = []byte{' '}
 )
 
 var upgrader = websocket.Upgrader{
@@ -70,7 +63,6 @@ func (c *Client) readPump() {
 			}
 			break
 		}
-		data = bytes.TrimSpace(bytes.Replace(data, newline, space, -1))
 		var message RtcMessage
 		err = json.Unmarshal(data, &message)
 		if err != nil {
@@ -113,13 +105,6 @@ func (c *Client) writePump() {
 			log.Printf("client %s write %s", c.id, string(message))
 			w.Write(message)
 
-			n := len(c.send)
-			for i := 0; i < n; i++ {
-				log.Printf("write more messages %d", i)
-				w.Write(newline)
-				w.Write(<-c.send)
-			}
-
 			if err := w.Close(); err != nil {
 				log.Printf("error closing writer %v", err)
 				return
@@ -154,10 +139,13 @@ func (h *Clients) run() {
 		select {
 		case client := <-h.register:
 			log.Printf("register %s", client.id)
+			if prevClient, ok := h.clients[client.id]; ok {
+				close(prevClient.send)
+			}
 			h.clients[client.id] = client
 		case client := <-h.unregister:
 			log.Printf("unregister %s", client.id)
-			if _, ok := h.clients[client.id]; ok {
+			if _, ok := h.clients[client.id]; ok && h.clients[client.id] == client {
 				delete(h.clients, client.id)
 				close(client.send)
 			}
@@ -189,7 +177,7 @@ func connect(clients *Clients, w http.ResponseWriter, r *http.Request) {
 		log.Fatalf("error upgrading connection %v", err)
 		return
 	}
-	client := &Client{id: uuid.NewString(), clients: clients, conn: conn, send: make(chan []byte, 256)}
+	client := &Client{id: r.URL.Query().Get("id"), clients: clients, conn: conn, send: make(chan []byte, 256)}
 	clients.register <- client
 
 	go client.writePump()
