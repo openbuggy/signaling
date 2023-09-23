@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -193,5 +194,12 @@ func main() {
 		connect(clients, w, r)
 	})
 
-	log.Fatal(http.ListenAndServe(":8080", cors.Default().Handler(mux)))
+	var port string
+	if value, ok := os.LookupEnv("PORT"); ok {
+		port = value
+	} else {
+		port = "5001"
+	}
+
+	log.Fatal(http.ListenAndServe(":"+port, cors.Default().Handler(mux)))
 }
