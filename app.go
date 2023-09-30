@@ -11,26 +11,17 @@ import (
 	"github.com/rs/cors"
 )
 
-type RtcMessage struct {
+type Message struct {
 	Type    string          `json:"type"`
 	From    string          `json:"from"`
 	To      string          `json:"to"`
 	Message json.RawMessage `json:"message"`
 }
 
-type PeersMessage struct {
-	Type    string   `json:"type"`
-	PeerIds []string `json:"peerIds"`
-}
-
 const (
-	// Time allowed to write a message to the peer.
-	writeWait = 10 * time.Second
-	// Time allowed to read the next pong message from the peer.
-	pongWait = 60 * time.Second
-	// Send pings to peer with this period. Must be less than pongWait.
-	pingPeriod = (pongWait * 9) / 10
-	// Maximum message size allowed from peer.
+	writeWait      = 10 * time.Second
+	pongWait       = 60 * time.Second
+	pingPeriod     = (pongWait * 9) / 10 // must be less than pongwait
 	maxMessageSize = 1024 * 1024
 )
 
@@ -64,21 +55,25 @@ func (c *Client) readPump() {
 			}
 			break
 		}
-		var message RtcMessage
+		var message Message
 		err = json.Unmarshal(data, &message)
 		if err != nil {
 			log.Fatalf("unmarshal error %v", err)
 			break
 		}
-		message.From = c.id
-		message.Type = "rtc"
-		messageBytes, err := json.Marshal(message)
-		if err != nil {
-			log.Fatalf("marshal error %v", err)
-			break
+		if toClient, ok := c.clients.clients[message.To]; ok {
+			message.From = c.id
+			message.Type = "rtc"
+			messageBytes, err := json.Marshal(message)
+			if err != nil {
+				log.Fatalf("marshal error %v", err)
+				break
+			}
+			log.Printf("send %s to %s", string(messageBytes), message.To)
+			toClient.send <- messageBytes
+		} else {
+			log.Printf("client %s not connected", message.To)
 		}
-		log.Printf("send %s to %s", string(messageBytes), message.To)
-		c.clients.clients[message.To].send <- messageBytes
 	}
 }
 
@@ -150,22 +145,6 @@ func (h *Clients) run() {
 				delete(h.clients, client.id)
 				close(client.send)
 			}
-		}
-		log.Print("send peers to clients")
-		for id, client := range h.clients {
-			peerIds := make([]string, len(h.clients)-1)
-			i := 0
-			for peerId := range h.clients {
-				if id != peerId {
-					peerIds[i] = peerId
-					i++
-				}
-			}
-			json, err := json.Marshal(PeersMessage{Type: "peers", PeerIds: peerIds})
-			if err != nil {
-				log.Fatalf("error marshal peers %v", err)
-			}
-			client.send <- json
 		}
 	}
 }
